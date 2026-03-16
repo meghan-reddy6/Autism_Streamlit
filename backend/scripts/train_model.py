@@ -23,7 +23,7 @@ for row in X:
     total = np.sum(row)
     if total <= 35:
         y.append("Non Autistic")
-    elif total <= 43:
+    elif total <= 43 and total >= 36:
         y.append("Mildly-Moderately Autistic")
     else:
         y.append("Severely Autistic")
