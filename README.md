@@ -77,8 +77,7 @@ Notes and troubleshooting:
 
 If you'd like, I can add a small `Makefile` or npm scripts to simplify training and local runs, or add an admin API to retrain in-place — tell me which you'd prefer.
 
-Admin retrain endpoint
-----------------------
+## Admin retrain endpoint
 
 For convenience there is an admin endpoint that retrains the model in-place and reloads it into the running API:
 
