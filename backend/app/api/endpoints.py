@@ -4,6 +4,9 @@ from typing import List
 from app import schemas, models
 from app.database import get_db
 from app.ml.predict import predict_autism
+import subprocess
+import os
+from app.ml import predict as ml_predict
 
 router = APIRouter()
 
@@ -99,11 +102,23 @@ async def submit_assessment(assessment_in: schemas.AssessmentCreate, db: AsyncSe
         db.add(db_response)
         
     await db.commit()
-    await db.refresh(db_assessment)
     
-    # We dynamically attach the ml_prediction to the response model despite it not being on the DB schema
-    db_assessment.ml_prediction = ml_prediction
-    return db_assessment
+    # Return the response using the schema instead of the SQLAlchemy model
+    return schemas.AssessmentResult(
+        id=db_assessment.id,
+        total_score=db_assessment.total_score,
+        interpretation=db_assessment.interpretation,
+        ml_prediction=ml_prediction,
+        child_name=db_assessment.child_name,
+        child_age=db_assessment.child_age,
+        child_gender=db_assessment.child_gender,
+        parent_name=db_assessment.parent_name,
+        contact_number=db_assessment.contact_number,
+        contact_email=db_assessment.contact_email,
+        consent_given=bool(db_assessment.consent_given),
+        created_at=db_assessment.created_at,
+        responses=None  # Not including responses in the response to avoid async issues
+    )
 
 @router.get("/assessment/{assessment_id}", response_model=schemas.AssessmentResult)
 async def get_assessment(assessment_id: int, db: AsyncSession = Depends(get_db)):
@@ -119,6 +134,52 @@ async def get_assessment(assessment_id: int, db: AsyncSession = Depends(get_db))
         
     raw_scores = [resp.score for resp in db_assessment.responses]
     ml_prediction = predict_autism(raw_scores) if len(raw_scores) == 20 else "Incomplete Data"
-    db_assessment.ml_prediction = ml_prediction
     
-    return db_assessment
+    # Convert responses to the expected format
+    responses = [
+        schemas.QuestionResponse(
+            question_id=resp.question_id,
+            section=resp.section,
+            score=resp.score
+        ) for resp in db_assessment.responses
+    ]
+    
+    return schemas.AssessmentResult(
+        id=db_assessment.id,
+        total_score=db_assessment.total_score,
+        interpretation=db_assessment.interpretation,
+        ml_prediction=ml_prediction,
+        child_name=db_assessment.child_name,
+        child_age=db_assessment.child_age,
+        child_gender=db_assessment.child_gender,
+        parent_name=db_assessment.parent_name,
+        contact_number=db_assessment.contact_number,
+        contact_email=db_assessment.contact_email,
+        consent_given=bool(db_assessment.consent_given),
+        created_at=db_assessment.created_at,
+        responses=responses
+    )
+
+
+@router.post("/admin/retrain")
+async def admin_retrain():
+    """Admin endpoint to retrain the ML model by running the training script
+    and reloading the model into memory. Returns the training output and reload status.
+    """
+    script_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "scripts", "train_model.py")
+    try:
+        # Run the training script
+        proc = subprocess.run(["python", script_path], capture_output=True, text=True, check=False)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to start training script: {e}")
+
+    # Always attempt to reload model whether training succeeded or not
+    success, msg = ml_predict.reload_model()
+
+    return {
+        "training_returncode": proc.returncode,
+        "training_stdout": proc.stdout,
+        "training_stderr": proc.stderr,
+        "model_reload_success": success,
+        "model_reload_message": msg,
+    }
