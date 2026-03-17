@@ -2,105 +2,100 @@ import joblib
 import numpy as np
 import os
 import typing
+import logging
+
+logger = logging.getLogger(__name__)
 
 # Path: backend/tabc_model.joblib (relative to this file)
-model_path = os.path.join(
+MODEL_PATH = os.path.join(
     os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "tabc_model.joblib"
 )
 
-# Load model if it exists and capture metadata
-model = None
-model_classes: typing.Optional[list] = None
+class MLModelService:
+    """Encapsulates ML Model loading and inference to prevent global state leaks."""
+    
+    def __init__(self, model_path: str = MODEL_PATH):
+        self.model_path = model_path
+        self.model = None
+        self.model_classes: typing.Optional[list] = None
+        self.reload_model()
 
-
-def reload_model() -> tuple[bool, str]:
-    """Attempt to (re)load the model from `model_path` into module globals.
-    Returns (success, message).
-    """
-    global model, model_classes
-    try:
-        model = joblib.load(model_path)
+    def reload_model(self) -> tuple[bool, str]:
+        """Attempt to (re)load the model from `model_path`."""
         try:
-            model_classes = list(model.classes_)
+            self.model = joblib.load(self.model_path)
+            try:
+                self.model_classes = list(self.model.classes_)
+            except Exception:
+                self.model_classes = None
+            msg = f"Machine Learning Model loaded successfully from {self.model_path}"
+            logger.info(msg)
+            return True, msg
+        except Exception as e:
+            self.model = None
+            self.model_classes = None
+            msg = f"Failed to load ML model. Ensure scripts/train_model.py has been run. Error: {e}"
+            logger.warning(msg)
+            return False, msg
+
+    def _validate_scores(self, scores: list) -> tuple[bool, str, np.ndarray | None]:
+        if not isinstance(scores, (list, tuple, np.ndarray)):
+            return False, "Scores must be a list of exactly 20 integers between 1 and 4", None
+        if len(scores) != 20:
+            return False, "Expected exactly 20 scores", None
+        try:
+            arr = np.array([int(x) for x in scores], dtype=int).reshape(1, -1)
         except Exception:
-            model_classes = None
-        msg = f"Machine Learning Model loaded successfully from {model_path}"
-        print(msg)
-        if model_classes:
-            print("Model classes:", model_classes)
-        return True, msg
-    except Exception as e:
-        model = None
-        model_classes = None
-        msg = f"Failed to load ML model. Ensure scripts/train_model.py has been run. Error: {e}"
-        print(msg)
-        return False, msg
+            return False, "Scores must be integers", None
+        if arr.min() < 1 or arr.max() > 4:
+            return False, "Scores values must be between 1 and 4", None
+        return True, "ok", arr
 
-
-# Load on import if present
-_loaded, _msg = reload_model()
-
-
-def _validate_scores(scores: list) -> tuple[bool, str, np.ndarray | None]:
-    if not isinstance(scores, (list, tuple, np.ndarray)):
-        return False, "Scores must be a list of 20 integers between 1 and 4", None
-    if len(scores) != 20:
-        return False, "Expected 20 scores", None
-    try:
-        arr = np.array([int(x) for x in scores], dtype=int).reshape(1, -1)
-    except Exception:
-        return False, "Scores must be integers", None
-    if arr.min() < 1 or arr.max() > 4:
-        return False, "Scores values must be between 1 and 4", None
-    return True, "ok", arr
-
-
-def predict_autism(scores: list) -> str:
-    """
-    Predicts an interpretation string from 20 integer scores (1-4).
-    Returns a human-friendly label. If model is not available, returns a fallback
-    based on rule-based scoring.
-    """
-    # Validate input
-    valid, msg, X_pred = _validate_scores(scores)
-    if not valid:
-        return f"Invalid Data: {msg}"
-
-    # If model is not loaded, return rule-based fallback
-    if model is None:
-        total = int(np.sum(X_pred))
-        if 20 <= total <= 35:
+    @staticmethod
+    def get_rule_based_interpretation(total_score: int) -> str:
+        """Static rule-based fallback logic (TABC rules)."""
+        if 20 <= total_score <= 35:
             return "Non Autistic"
-        elif 36 <= total <= 43:
+        elif 36 <= total_score <= 43:
             return "Mildly-Moderately Autistic"
-        elif total >= 44:
+        elif total_score >= 44:
             return "Severely Autistic"
         else:
             return "Invalid score range"
 
-    # Use model prediction; include probability if available
-    try:
-        pred = model.predict(X_pred)
-        label = str(pred[0])
-        # Attach confidence/proba when available
-        proba = None
+    def predict_autism(self, scores: list) -> str:
+        """
+        Predicts an interpretation string from 20 integer scores (1-4).
+        Returns a human-friendly label. Falls back to rule-based scoring if model is absent.
+        """
+        valid, msg, X_pred = self._validate_scores(scores)
+        if not valid:
+            return f"Invalid Data: {msg}"
+
+        # Rule-based fallback if ML model isn't loaded
+        if self.model is None:
+            return self.get_rule_based_interpretation(int(np.sum(X_pred)))
+
+        # ML Inference
         try:
-            probs = model.predict_proba(X_pred)
-            proba = float(np.max(probs))
-        except Exception:
+            pred = self.model.predict(X_pred)
+            label = str(pred[0])
+            
+            # Attach confidence probability if the model supports it
             proba = None
-        if proba is not None:
-            return f"{label} ({proba:.2f})"
-        return label
-    except Exception as e:
-        # As a last resort, fall back to rule-based
-        print("Model prediction failed, falling back to rule-based. Error:", e)
-        total = int(np.sum(X_pred))
-        if 20 <= total <= 35:
-            return "Non Autistic"
-        elif 36 <= total <= 43:
-            return "Mildly-Moderately Autistic"
-        elif total >= 44:
-            return "Severely Autistic"
-        else:
-            return "Invalid score range"
+            try:
+                probs = self.model.predict_proba(X_pred)
+                proba = float(np.max(probs))
+            except Exception:
+                pass
+            
+            if proba is not None:
+                return f"{label} ({proba:.2f})"
+            return label
+            
+        except Exception as e:
+            logger.error(f"Model prediction failed, falling back to rules. Error: {e}")
+            return self.get_rule_based_interpretation(int(np.sum(X_pred)))
+
+# Singleton instance exported for use in routes
+ml_service = MLModelService()
