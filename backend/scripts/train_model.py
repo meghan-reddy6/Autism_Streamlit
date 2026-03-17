@@ -1,3 +1,4 @@
+import os
 import numpy as np
 from sklearn.ensemble import RandomForestClassifier
 import joblib
@@ -22,7 +23,7 @@ for row in X:
     total = np.sum(row)
     if total <= 35:
         y.append("Non Autistic")
-    elif total <= 43:
+    elif total <= 43 and total >= 36:
         y.append("Mildly-Moderately Autistic")
     else:
         y.append("Severely Autistic")
@@ -35,5 +36,6 @@ model.fit(X, y)
 accuracy = model.score(X, y)
 print(f"Model trained successfully. Accuracy on synthetic data: {accuracy*100:.2f}%")
 
-joblib.dump(model, "tabc_model.joblib")
-print("Model saved to tabc_model.joblib")
+save_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "tabc_model.joblib")
+joblib.dump(model, save_path)
+print(f"Model saved to {save_path}")
